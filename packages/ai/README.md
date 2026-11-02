@@ -1829,6 +1829,48 @@ await models.complete(model, context);
 await models.logout('anthropic');
 ```
 
+### External OAuth callbacks
+
+For embedded applications, remote control planes, and web servers that already own an
+HTTP callback endpoint, pass `callback: { mode: "external" }` to `Models.login`.
+The OAuth flow will not bind its own local HTTP listener. The application receives the
+browser redirect and supplies the full redirect URL through the existing
+`manual_code` prompt. Pi still generates PKCE and state, validates the received
+callback where supported, exchanges the code, and stores the returned credential.
+
+```typescript
+await models.login('openai', 'oauth', {
+  notify(event) {
+    if (event.type === 'auth_url') showAuthorizationLink(event.url);
+  },
+  prompt(prompt) {
+    if (prompt.type !== 'manual_code') throw new Error('Unsupported prompt');
+    return waitForExternalCallback(prompt.signal);
+  },
+}, {
+  getDeviceId: () => myInstallationUUID,
+  callback: { mode: 'external' },
+});
+```
+
+The host is responsible for correlating each callback with the correct pending login,
+enforcing one-time use, and routing `state` or an opaque callback path across
+concurrent accounts. The `prompt` must honor cancellation and should not expose
+codes or tokens in logs. This mode does not change provider redirect restrictions:
+
+- OpenAI ChatGPT and legacy Codex require their existing registered loopback
+  redirect URIs. An optional `redirectUri` must match the registered value.
+- Anthropic and Radius can accept an explicit `redirectUri`; without one they
+  use their usual loopback URI. Provider-side registration restrictions still apply.
+- OpenRouter requires an explicit `redirectUri` containing a unique, unpredictable
+  path or other per-login identifier, because OpenRouter does not return OAuth
+  `state` and normally generates a random local callback path.
+- Device-code and copy-code flows do not open a browser callback listener and
+  are unchanged.
+
+When `callback` is omitted, native callback listeners and their current fallback
+behavior are unchanged.
+
 ### Vertex AI
 
 Vertex AI models support either a Google Cloud API key or Application Default Credentials (ADC). Its provider-owned API-key login flow can configure either method:

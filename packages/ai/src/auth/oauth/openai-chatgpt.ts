@@ -238,14 +238,20 @@ async function loginOpenAIChatGPT(
 	const { verifier, challenge } = await generatePKCE();
 	const state = randomValue();
 	const nonce = randomValue();
-	// Without this server, the browser's callback would reach whatever else holds the port (another
-	// pending login or the Codex CLI), which rejects it as a state mismatch. Fail with a clear error instead.
-	const callback = await startCallbackServer(state).catch((error: unknown) => {
-		if (!(error instanceof Error && "code" in error && error.code === "EADDRINUSE")) throw error;
-		throw new Error(
-			`Port ${CALLBACK_PORT} is in use, probably by an unfinished login in another pi session or by the Codex CLI. Cancel that login and try again.`,
-		);
-	});
+	if (options?.callback?.redirectUri && options.callback.redirectUri !== REDIRECT_URI) {
+		throw new Error(`OpenAI ChatGPT requires the registered redirect URI ${REDIRECT_URI}`);
+	}
+	// Default mode rejects competing listeners rather than consuming another
+	// login's redirect. External hosts own callback routing and need no listener.
+	const callback =
+		options?.callback?.mode === "external"
+			? undefined
+			: await startCallbackServer(state).catch((error: unknown) => {
+					if (!(error instanceof Error && "code" in error && error.code === "EADDRINUSE")) throw error;
+					throw new Error(
+						`Port ${CALLBACK_PORT} is in use, probably by an unfinished login in another pi session or by the Codex CLI. Cancel that login and try again.`,
+					);
+				});
 
 	const authorizationUrl = new URL(AUTHORIZE_URL);
 	authorizationUrl.search = new URLSearchParams({
@@ -279,7 +285,7 @@ async function loginOpenAIChatGPT(
 		.then((input) => authorizationResultFromManualInput(input, state));
 
 	try {
-		const result = await Promise.race([callback.result, manualCode]);
+		const result = callback ? await Promise.race([callback.result, manualCode]) : await manualCode;
 		interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
 		return await exchangeAuthorizationCode(result.code, verifier, result.clientId, interaction.signal);
 	} catch (error) {
@@ -287,13 +293,13 @@ async function loginOpenAIChatGPT(
 		throw error;
 	} finally {
 		manualAbort.abort();
-		callback.server.close();
+		callback?.server.close();
 		// close() only stops accepting new connections. Browsers open spare connections ahead of
 		// time, and one that has not sent a request yet stays open and attached to this server.
 		// A later login in the same process starts a new server with a new state, but the browser
 		// may send that login's callback over the spare connection. This server would then handle
 		// it and reject it with "OAuth state mismatch", and the new login would never see it.
-		callback.server.closeAllConnections();
+		callback?.server.closeAllConnections();
 	}
 }
 

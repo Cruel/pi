@@ -205,6 +205,16 @@ export interface ApiKeyAuth {
 /** App-supplied context for `Models.login`. */
 export interface LoginOptions {
 	/**
+	 * Let the host application receive the OAuth browser redirect rather than
+	 * binding a local HTTP listener. The host delivers the full callback URL or
+	 * provider-specific code through the existing manual_code prompt.
+	 *
+	 * redirectUri defaults to the provider's registered loopback URI. Providers
+	 * using dynamically allocated callback URLs require an explicit redirectUri.
+	 * The host must securely correlate and validate concurrent callbacks.
+	 */
+	callback?: { mode: "external"; redirectUri?: string };
+	/**
 	 * Returns the stable ID of this app installation, e.g. sent to OpenAI as its
 	 * agent host ID. Called only by login flows that need it, so apps can create
 	 * the ID on first use and must return the same ID on every later call.

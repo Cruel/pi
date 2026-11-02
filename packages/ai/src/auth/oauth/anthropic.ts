@@ -6,7 +6,7 @@
  */
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
 import { generatePKCE } from "./pkce.ts";
 
@@ -137,7 +137,7 @@ async function exchangeAuthorizationCode(
 	};
 }
 
-async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
+async function loginAnthropic(interaction: ProviderAuthInteraction, options?: LoginOptions): Promise<OAuthCredential> {
 	const { verifier, challenge } = await generatePKCE();
 	const startCallbackServer = (port: number) =>
 		startOAuthCallbackServer({
@@ -151,10 +151,13 @@ async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAu
 			signal: interaction.signal,
 		});
 	// Without a callback server, login continues with the pasted redirect URL.
-	const callback = await startCallbackServer(CALLBACK_PORT)
-		.catch(() => startCallbackServer(0))
-		.catch(() => undefined);
-	const redirectUri = callback?.redirectUri ?? REDIRECT_URI;
+	const callback =
+		options?.callback?.mode === "external"
+			? undefined
+			: await startCallbackServer(CALLBACK_PORT)
+					.catch(() => startCallbackServer(0))
+					.catch(() => undefined);
+	const redirectUri = options?.callback?.redirectUri ?? callback?.redirectUri ?? REDIRECT_URI;
 
 	try {
 		const authParams = new URLSearchParams({
@@ -279,7 +282,7 @@ export const anthropicOAuth: OAuthAuth = {
 	name: "Anthropic (Claude Pro/Max)",
 	isSubscription: true,
 
-	async login(interaction) {
+	async login(interaction, options) {
 		const method = await interaction.prompt({
 			type: "select",
 			message: "Select Anthropic login method:",
@@ -296,7 +299,7 @@ export const anthropicOAuth: OAuthAuth = {
 			throw new Error(`Unknown Anthropic login method: ${method}`);
 		}
 
-		return loginAnthropic(interaction);
+		return loginAnthropic(interaction, options);
 	},
 
 	refresh: (credential, signal) => refreshAnthropicToken(credential.refresh, signal),

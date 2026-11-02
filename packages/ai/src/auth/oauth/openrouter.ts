@@ -12,7 +12,7 @@
  */
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
 import { generatePKCE } from "./pkce.ts";
 
@@ -110,31 +110,41 @@ async function exchangeAuthorizationCode(
 	};
 }
 
-async function loginOpenRouter(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
+async function loginOpenRouter(interaction: ProviderAuthInteraction, options?: LoginOptions): Promise<OAuthCredential> {
 	const { verifier, challenge } = await generatePKCE();
-	// OpenRouter sends no `state`; the random path keeps stray requests from completing the sign-in.
-	const callback = await startOAuthCallbackServer({
-		providerName: "OpenRouter",
-		host: getCallbackHost(),
-		port: 0,
-		path: `/oauth/callback/${crypto.randomUUID()}`,
-		complete: (code) => exchangeAuthorizationCode(code, verifier, interaction.signal),
-		signal: interaction.signal,
-		timeoutMs: LOGIN_TIMEOUT_MS,
-	});
+	// OpenRouter sends no state; the external host must supply a distinct,
+	// unpredictable callback URI for each authorization attempt.
+	if (options?.callback?.mode === "external" && !options.callback.redirectUri) {
+		throw new Error("OpenRouter external callback requires a redirectUri unique to this login");
+	}
+	const callback =
+		options?.callback?.mode === "external"
+			? undefined
+			: await startOAuthCallbackServer({
+					providerName: "OpenRouter",
+					host: getCallbackHost(),
+					port: 0,
+					path: `/oauth/callback/${crypto.randomUUID()}`,
+					complete: (code) => exchangeAuthorizationCode(code, verifier, interaction.signal),
+					signal: interaction.signal,
+					timeoutMs: LOGIN_TIMEOUT_MS,
+				});
 
 	try {
+		const redirectUri = options?.callback?.redirectUri ?? callback?.redirectUri;
+		if (!redirectUri) throw new Error("Missing OpenRouter OAuth callback URI");
 		const authorizeUrl = new URL(AUTHORIZE_URL);
 		authorizeUrl.search = new URLSearchParams({
-			callback_url: callback.redirectUri,
+			callback_url: redirectUri,
 			code_challenge: challenge,
 			code_challenge_method: "S256",
 		}).toString();
 
-		interaction.notify({
-			type: "progress",
-			message: `Listening for OpenRouter OAuth callback on ${callback.redirectUri}`,
-		});
+		if (callback)
+			interaction.notify({
+				type: "progress",
+				message: `Listening for OpenRouter OAuth callback on ${callback.redirectUri}`,
+			});
 		interaction.notify({
 			type: "auth_url",
 			url: authorizeUrl.toString(),
@@ -144,7 +154,7 @@ async function loginOpenRouter(interaction: ProviderAuthInteraction): Promise<OA
 
 		const result = await waitForCallbackOrManualInput(interaction, callback, {
 			message: "Complete sign-in in your browser, or paste the authorization code / redirect URL here:",
-			placeholder: callback.redirectUri,
+			placeholder: redirectUri,
 		});
 		if (result.type === "callback") return result.value;
 		const code = parseAuthorizationInput(result.input);
@@ -152,7 +162,7 @@ async function loginOpenRouter(interaction: ProviderAuthInteraction): Promise<OA
 		interaction.notify({ type: "progress", message: "Exchanging authorization code for an API key..." });
 		return await exchangeAuthorizationCode(code, verifier, interaction.signal);
 	} finally {
-		callback.close();
+		callback?.close();
 	}
 }
 

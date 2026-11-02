@@ -108,6 +108,36 @@ describe("OpenAI ChatGPT OAuth", () => {
 		});
 	});
 
+	it("allows simultaneous external browser callbacks without binding a listener", async () => {
+		const authStates: string[] = [];
+		const exchangedCodes: string[] = [];
+		stubTokenEndpoint(tokenResponse(), (body) => exchangedCodes.push(body.get("code") ?? ""));
+		const run = (clientId: string) =>
+			openaiChatGPTOAuth.login(
+				loginInteraction({
+					callbackClientId: clientId,
+					onAuthorize: (url) => {
+						authStates.push(url.searchParams.get("state") ?? "");
+					},
+				}),
+				{ getDeviceId: () => DEVICE_ID, callback: { mode: "external" } },
+			);
+		const [alice, bob] = await Promise.all([run("alice-client"), run("bob-client")]);
+		expect(authStates).toHaveLength(2);
+		expect(authStates[0]).not.toBe(authStates[1]);
+		expect([alice.clientId, bob.clientId]).toEqual(["alice-client", "bob-client"]);
+		expect(exchangedCodes).toEqual(["authorization-code", "authorization-code"]);
+	});
+
+	it("rejects a custom external redirect when the provider requires a registered URI", async () => {
+		await expect(
+			openaiChatGPTOAuth.login(loginInteraction(), {
+				getDeviceId: () => DEVICE_ID,
+				callback: { mode: "external", redirectUri: "https://example.com/callback" },
+			}),
+		).rejects.toThrow("requires the registered redirect URI");
+	});
+
 	it("uses the app's agent name as the name hint", async () => {
 		let authorizeUrl: URL | undefined;
 		stubTokenEndpoint(tokenResponse());

@@ -361,16 +361,22 @@ async function loginOpenAICodex(
 	options?: LoginOptions,
 ): Promise<OAuthCredential> {
 	const { verifier, state, url } = await createAuthorizationFlow(options?.agentName);
+	if (options?.callback?.redirectUri && options.callback.redirectUri !== REDIRECT_URI) {
+		throw new Error(`OpenAI Codex requires the registered redirect URI ${REDIRECT_URI}`);
+	}
 	// Port 1455 is shared with the Codex CLI; when it is taken, fall back to the pasted redirect URL.
-	const callback = await startOAuthCallbackServer({
-		providerName: "OpenAI",
-		host: getCallbackHost(),
-		port: 1455,
-		path: "/auth/callback",
-		state,
-		complete: async (code) => code,
-		signal: interaction.signal,
-	}).catch(() => undefined);
+	const callback =
+		options?.callback?.mode === "external"
+			? undefined
+			: await startOAuthCallbackServer({
+					providerName: "OpenAI",
+					host: getCallbackHost(),
+					port: 1455,
+					path: "/auth/callback",
+					state,
+					complete: async (code) => code,
+					signal: interaction.signal,
+				}).catch(() => undefined);
 
 	interaction.notify({
 		type: "auth_url",

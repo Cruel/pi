@@ -10,7 +10,7 @@
  */
 
 import { normalizeRadiusGatewayUrl } from "../../providers/radius-config.ts";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer } from "./callback-server.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 import { generatePKCE } from "./pkce.ts";
@@ -137,14 +137,29 @@ async function loginWithBrowser(
 	gateway: string,
 	authorizationEndpoint: string,
 	interaction: ProviderAuthInteraction,
+	options?: LoginOptions,
 ): Promise<OAuthCredential> {
 	const { verifier, challenge } = await generatePKCE();
 	const state = crypto.randomUUID();
+	const redirectUri =
+		options?.callback?.mode === "external" ? (options.callback.redirectUri ?? REDIRECT_URI) : REDIRECT_URI;
+	const exchange = (code: string) =>
+		requestOAuthToken(
+			gateway,
+			new URLSearchParams({
+				grant_type: "authorization_code",
+				client_id: OAUTH_CLIENT_ID,
+				redirect_uri: redirectUri,
+				code,
+				code_verifier: verifier,
+			}),
+			interaction.signal,
+		);
 	const authorizeUrl = new URL(authorizationEndpoint);
 	authorizeUrl.search = new URLSearchParams({
 		response_type: "code",
 		client_id: OAUTH_CLIENT_ID,
-		redirect_uri: REDIRECT_URI,
+		redirect_uri: redirectUri,
 		scope: OAUTH_SCOPE,
 		code_challenge: challenge,
 		code_challenge_method: "S256",
@@ -152,27 +167,19 @@ async function loginWithBrowser(
 		state,
 	}).toString();
 
-	const callback = await startOAuthCallbackServer({
-		providerName: "Radius",
-		host: CALLBACK_HOST,
-		port: CALLBACK_PORT,
-		path: CALLBACK_PATH,
-		state,
-		complete: (code) =>
-			requestOAuthToken(
-				gateway,
-				new URLSearchParams({
-					grant_type: "authorization_code",
-					client_id: OAUTH_CLIENT_ID,
-					redirect_uri: REDIRECT_URI,
-					code,
-					code_verifier: verifier,
-				}),
-				interaction.signal,
-			),
-		signal: interaction.signal,
-	});
-	interaction.notify({ type: "progress", message: `Listening for OAuth callback on ${REDIRECT_URI}` });
+	const callback =
+		options?.callback?.mode === "external"
+			? undefined
+			: await startOAuthCallbackServer({
+					providerName: "Radius",
+					host: CALLBACK_HOST,
+					port: CALLBACK_PORT,
+					path: CALLBACK_PATH,
+					state,
+					complete: exchange,
+					signal: interaction.signal,
+				});
+	if (callback) interaction.notify({ type: "progress", message: `Listening for OAuth callback on ${REDIRECT_URI}` });
 	interaction.notify({
 		type: "auth_url",
 		url: authorizeUrl.toString(),
@@ -180,11 +187,30 @@ async function loginWithBrowser(
 	});
 
 	try {
-		const credential = await callback.wait();
-		if (!credential) throw new Error("OAuth callback did not complete.");
-		return credential;
+		if (callback) {
+			const credential = await callback.wait();
+			if (!credential) throw new Error("OAuth callback did not complete.");
+			return credential;
+		}
+		const input = await interaction.prompt({
+			type: "manual_code",
+			message: "Complete login in your browser, or provide the full redirect URL here:",
+			placeholder: redirectUri,
+			signal: interaction.signal,
+		});
+		const returned = new URL(input);
+		const expected = new URL(redirectUri);
+		if (returned.origin !== expected.origin || returned.pathname !== expected.pathname) {
+			throw new Error("OAuth callback URI mismatch");
+		}
+		if (returned.searchParams.get("state") !== state) throw new Error("OAuth state mismatch");
+		const error = returned.searchParams.get("error");
+		if (error) throw new Error(`Radius authorization failed: ${error}`);
+		const code = returned.searchParams.get("code");
+		if (!code) throw new Error("Missing authorization code");
+		return exchange(code);
 	} finally {
-		callback.close();
+		callback?.close();
 	}
 }
 
@@ -284,7 +310,7 @@ export function createRadiusOAuth(options: RadiusOAuthOptions): OAuthAuth {
 	return {
 		name: options.name,
 
-		async login(interaction): Promise<OAuthCredential> {
+		async login(interaction, loginOptions): Promise<OAuthCredential> {
 			const loginMethod = await interaction.prompt({
 				type: "select",
 				message: `Sign in to ${options.name}:`,
@@ -302,7 +328,7 @@ export function createRadiusOAuth(options: RadiusOAuthOptions): OAuthAuth {
 			}
 			if (loginMethod === LOGIN_METHOD_BROWSER) {
 				const discovery = await loadRadiusOAuthDiscovery(gateway, interaction.signal);
-				return loginWithBrowser(gateway, discovery.authorizationEndpoint, interaction);
+				return loginWithBrowser(gateway, discovery.authorizationEndpoint, interaction, loginOptions);
 			}
 			throw new Error(`Unknown ${options.name} sign-in method: ${loginMethod}`);
 		},
