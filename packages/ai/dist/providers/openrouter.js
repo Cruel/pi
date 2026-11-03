@@ -67,6 +67,7 @@ export function openrouterProvider() {
             oauth: lazyOAuth({
                 name: "OpenRouter OAuth",
                 loginLabel: "Sign in with OpenRouter",
+                authorizationCode: true,
                 load: loadOpenRouterOAuth,
             }),
         },

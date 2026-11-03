@@ -12,6 +12,7 @@ export function openaiCodexProvider() {
             oauth: lazyOAuth({
                 name: "OpenAI (ChatGPT Plus/Pro)",
                 isSubscription: true,
+                authorizationCode: true,
                 load: loadOpenAICodexOAuth,
             }),
         },

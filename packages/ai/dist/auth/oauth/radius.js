@@ -11,6 +11,7 @@
 import { normalizeRadiusGatewayUrl } from "../../providers/radius-config.js";
 import { startOAuthCallbackServer } from "./callback-server.js";
 import { pollOAuthDeviceCodeFlow } from "./device-code.js";
+import { authorizationCallback, pendingAuthorization, redirectUriForHost } from "./external-authorization.js";
 import { generatePKCE } from "./pkce.js";
 import { trustedHttpUrl } from "./trusted-url.js";
 const CALLBACK_HOST = "127.0.0.1";
@@ -222,6 +223,36 @@ export function createRadiusOAuth(options) {
     const gateway = normalizeRadiusGatewayUrl(options.gateway);
     return {
         name: options.name,
+        async beginAuthorization(authorizationOptions) {
+            const signal = authorizationOptions.signal ?? new AbortController().signal;
+            signal.throwIfAborted();
+            const { authorizationEndpoint } = await loadRadiusOAuthDiscovery(gateway, signal);
+            const { verifier, challenge } = await generatePKCE();
+            const state = crypto.randomUUID();
+            const redirectUri = redirectUriForHost(authorizationOptions.redirectUri ?? REDIRECT_URI);
+            const url = new URL(authorizationEndpoint);
+            url.search = new URLSearchParams({
+                response_type: "code",
+                client_id: OAUTH_CLIENT_ID,
+                redirect_uri: redirectUri,
+                scope: OAUTH_SCOPE,
+                code_challenge: challenge,
+                code_challenge_method: "S256",
+                handoff: "url",
+                state,
+            }).toString();
+            return pendingAuthorization("radius", url.toString(), state, verifier, redirectUri);
+        },
+        async completeAuthorization(authorization, callbackUrl, signal) {
+            const { code, verifier, redirectUri } = authorizationCallback("radius", authorization, callbackUrl, signal);
+            return requestOAuthToken(gateway, new URLSearchParams({
+                grant_type: "authorization_code",
+                client_id: OAUTH_CLIENT_ID,
+                redirect_uri: redirectUri,
+                code,
+                code_verifier: verifier,
+            }), signal);
+        },
         async login(interaction) {
             const loginMethod = await interaction.prompt({
                 type: "select",

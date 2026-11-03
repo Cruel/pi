@@ -68,6 +68,7 @@ export function anthropicProvider() {
             oauth: lazyOAuth({
                 name: "Anthropic (Claude Pro/Max)",
                 isSubscription: true,
+                authorizationCode: true,
                 load: loadAnthropicOAuth,
             }),
         },

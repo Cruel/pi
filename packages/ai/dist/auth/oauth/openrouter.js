@@ -12,6 +12,7 @@
  */
 import { getProviderEnvValue } from "../../utils/provider-env.js";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.js";
+import { authorizationCallback, pendingAuthorization, redirectUriForHost } from "./external-authorization.js";
 import { generatePKCE } from "./pkce.js";
 const AUTHORIZE_URL = "https://openrouter.ai/auth";
 const TOKEN_URL = "https://openrouter.ai/api/v1/auth/keys";
@@ -144,10 +145,32 @@ async function loginOpenRouter(interaction) {
         callback.close();
     }
 }
+async function beginOpenRouterAuthorization(options = {}) {
+    options.signal?.throwIfAborted();
+    const { verifier, challenge } = await generatePKCE();
+    const state = crypto.randomUUID();
+    if (!options.redirectUri)
+        throw new Error("OpenRouter two-phase OAuth requires a host callback URL");
+    const redirectUri = redirectUriForHost(options.redirectUri);
+    const url = new URL(AUTHORIZE_URL);
+    url.search = new URLSearchParams({
+        callback_url: redirectUri,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        state,
+    }).toString();
+    return pendingAuthorization("openrouter", url.toString(), state, verifier, redirectUri);
+}
+async function completeOpenRouterAuthorization(authorization, callbackUrl, signal) {
+    const { code, verifier } = authorizationCallback("openrouter", authorization, callbackUrl, signal);
+    return exchangeAuthorizationCode(code, verifier, signal);
+}
 export const openRouterOAuth = {
     name: "OpenRouter OAuth",
     loginLabel: "Sign in with OpenRouter",
     login: loginOpenRouter,
+    beginAuthorization: beginOpenRouterAuthorization,
+    completeAuthorization: completeOpenRouterAuthorization,
     async refresh(credential, _signal) {
         return credential;
     },
