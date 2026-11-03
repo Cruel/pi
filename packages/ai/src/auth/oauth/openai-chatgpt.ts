@@ -61,16 +61,20 @@ function authorizationResultFromCallback(url: URL, expectedState: string): Autho
 	return { code, clientId };
 }
 
-function authorizationResultFromManualInput(input: string, expectedState: string): AuthorizationResult {
+function authorizationResultFromManualInput(
+	input: string,
+	expectedState: string,
+	redirectUri: string,
+): AuthorizationResult {
 	let url: URL;
 	try {
 		url = new URL(input.trim());
 	} catch {
 		throw new Error("Paste the full callback URL from the browser");
 	}
-	const expected = new URL(REDIRECT_URI);
+	const expected = new URL(redirectUri);
 	if (url.origin !== expected.origin || url.pathname !== expected.pathname) {
-		throw new Error(`The pasted callback URL must start with ${REDIRECT_URI}`);
+		throw new Error(`The pasted callback URL must start with ${redirectUri}`);
 	}
 	const error = url.searchParams.get("error");
 	if (error) throw new Error(`ChatGPT authorization failed: ${error}`);
@@ -184,6 +188,7 @@ async function exchangeAuthorizationCode(
 	code: string,
 	verifier: string,
 	clientId: string,
+	redirectUri: string,
 	signal: AbortSignal,
 ): Promise<OAuthCredential> {
 	const token = await requestToken(
@@ -192,7 +197,7 @@ async function exchangeAuthorizationCode(
 			client_id: clientId,
 			code,
 			code_verifier: verifier,
-			redirect_uri: REDIRECT_URI,
+			redirect_uri: redirectUri,
 			resource: RESOURCE,
 		}),
 		signal,
@@ -238,8 +243,24 @@ async function loginOpenAIChatGPT(
 	const { verifier, challenge } = await generatePKCE();
 	const state = randomValue();
 	const nonce = randomValue();
-	if (options?.callback?.redirectUri && options.callback.redirectUri !== REDIRECT_URI) {
-		throw new Error(`OpenAI ChatGPT requires the registered redirect URI ${REDIRECT_URI}`);
+	const redirectUri = options?.callback?.redirectUri ?? REDIRECT_URI;
+	if (redirectUri !== REDIRECT_URI) {
+		// ChatGPT permits a different loopback port, not a different host or path.
+		// External hosts can route directly to their existing HTTP server.
+		const redirect = new URL(redirectUri);
+		if (
+			options?.callback?.mode !== "external" ||
+			redirect.protocol !== "http:" ||
+			redirect.hostname !== "127.0.0.1" ||
+			!redirect.port ||
+			redirect.pathname !== CALLBACK_PATH ||
+			redirect.search ||
+			redirect.hash ||
+			redirect.username ||
+			redirect.password
+		) {
+			throw new Error(`OpenAI ChatGPT requires an HTTP loopback redirect at 127.0.0.1:<port>${CALLBACK_PATH}`);
+		}
 	}
 	// Default mode rejects competing listeners rather than consuming another
 	// login's redirect. External hosts own callback routing and need no listener.
@@ -259,7 +280,7 @@ async function loginOpenAIChatGPT(
 		agent_name_hint: options?.agentName ?? AGENT_NAME_HINT,
 		ext_agent_host_id: hostId,
 		response_type: "code",
-		redirect_uri: REDIRECT_URI,
+		redirect_uri: redirectUri,
 		resource: RESOURCE,
 		scope: SCOPE,
 		state,
@@ -279,15 +300,15 @@ async function loginOpenAIChatGPT(
 		.prompt({
 			type: "manual_code",
 			message: "Complete login in your browser, or paste the final redirect URL here:",
-			placeholder: REDIRECT_URI,
+			placeholder: redirectUri,
 			signal: AbortSignal.any([manualAbort.signal, interaction.signal]),
 		})
-		.then((input) => authorizationResultFromManualInput(input, state));
+		.then((input) => authorizationResultFromManualInput(input, state, redirectUri));
 
 	try {
 		const result = callback ? await Promise.race([callback.result, manualCode]) : await manualCode;
 		interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
-		return await exchangeAuthorizationCode(result.code, verifier, result.clientId, interaction.signal);
+		return await exchangeAuthorizationCode(result.code, verifier, result.clientId, redirectUri, interaction.signal);
 	} catch (error) {
 		if (interaction.signal.aborted) throw new Error("Login cancelled");
 		throw error;

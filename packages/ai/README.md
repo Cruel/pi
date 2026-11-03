@@ -1858,8 +1858,11 @@ enforcing one-time use, and routing `state` or an opaque callback path across
 concurrent accounts. The `prompt` must honor cancellation and should not expose
 codes or tokens in logs. This mode does not change provider redirect restrictions:
 
-- OpenAI ChatGPT and legacy Codex require their existing registered loopback
-  redirect URIs. An optional `redirectUri` must match the registered value.
+- OpenAI ChatGPT accepts an alternate port for an external callback URI, but
+  requires HTTP, the exact `127.0.0.1` host and `/auth/callback` path. The
+  provided URI is used identically in authorization, manual callback validation
+  and code exchange. Without an override it retains its default port 1455.
+  Legacy Codex continues to require its registered redirect URI.
 - Anthropic and Radius can accept an explicit `redirectUri`; without one they
   use their usual loopback URI. Provider-side registration restrictions still apply.
 - OpenRouter requires an explicit `redirectUri` containing a unique, unpredictable

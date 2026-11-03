@@ -129,13 +129,40 @@ describe("OpenAI ChatGPT OAuth", () => {
 		expect(exchangedCodes).toEqual(["authorization-code", "authorization-code"]);
 	});
 
-	it("rejects a custom external redirect when the provider requires a registered URI", async () => {
+	it("uses an externally hosted HTTP loopback port consistently for authorization and token exchange", async () => {
+		const redirectUri = "http://127.0.0.1:3000/auth/callback";
+		let authorize: URL | undefined;
+		let exchanged: URLSearchParams | undefined;
+		stubTokenEndpoint(tokenResponse(), (body) => {
+			exchanged = body;
+		});
+		const credential = await openaiChatGPTOAuth.login(
+			loginInteraction({
+				callbackClientId: "oaiapp_issued",
+				onAuthorize: (url) => {
+					authorize = url;
+				},
+			}),
+			{ getDeviceId: () => DEVICE_ID, callback: { mode: "external", redirectUri } },
+		);
+		expect(authorize?.searchParams.get("redirect_uri")).toBe(redirectUri);
+		expect(exchanged?.get("redirect_uri")).toBe(redirectUri);
+		expect(credential.clientId).toBe("oaiapp_issued");
+	});
+
+	it.each([
+		"https://example.com/auth/callback",
+		"http://localhost:3000/auth/callback",
+		"https://127.0.0.1:3000/auth/callback",
+		"http://127.0.0.1:3000/callback",
+		"http://127.0.0.1:3000/auth/callback?return=https://evil.example",
+	])("rejects unsupported external callback URI %s", async (redirectUri) => {
 		await expect(
 			openaiChatGPTOAuth.login(loginInteraction(), {
 				getDeviceId: () => DEVICE_ID,
-				callback: { mode: "external", redirectUri: "https://example.com/callback" },
+				callback: { mode: "external", redirectUri },
 			}),
-		).rejects.toThrow("requires the registered redirect URI");
+		).rejects.toThrow("requires an HTTP loopback redirect");
 	});
 
 	it("uses the app's agent name as the name hint", async () => {
