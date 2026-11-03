@@ -51,7 +51,7 @@ function authorizationResultFromManualInput(input, expectedState, redirectUri) {
     }
     const expected = new URL(redirectUri);
     if (url.origin !== expected.origin || url.pathname !== expected.pathname) {
-        throw new Error(`The callback URL must start with ${redirectUri}`);
+        throw new Error(`The pasted callback URL must start with ${redirectUri}`);
     }
     const error = url.searchParams.get("error");
     if (error)
@@ -83,8 +83,9 @@ function startCallbackServer(expectedState) {
                     rejectResult(new Error(`ChatGPT authorization failed: ${error}`));
                     return;
                 }
+                let authorizationResult;
                 try {
-                    authorizationResultFromCallback(url, expectedState);
+                    authorizationResult = authorizationResultFromCallback(url, expectedState);
                 }
                 catch (error) {
                     const message = error instanceof Error ? error.message : "Invalid callback";
@@ -92,7 +93,7 @@ function startCallbackServer(expectedState) {
                     return;
                 }
                 sendHtml(response, 200, oauthSuccessHtml("ChatGPT authentication completed. You can close this window."));
-                resolveResult(url.toString());
+                resolveResult(authorizationResult);
             }
             catch {
                 sendHtml(response, 500, oauthErrorHtml("Internal error while processing the callback."));
@@ -258,16 +259,19 @@ async function loginOpenAIChatGPT(interaction, options) {
         instructions: "Complete sign-in in your browser. If the callback does not complete, paste the final redirect URL here.",
     });
     const manualAbort = new AbortController();
-    const manualCode = interaction.prompt({
+    const manualCode = interaction
+        .prompt({
         type: "manual_code",
         message: "Complete login in your browser, or paste the final redirect URL here:",
         placeholder: REDIRECT_URI,
         signal: AbortSignal.any([manualAbort.signal, interaction.signal]),
-    });
+    })
+        .then((input) => authorizationResultFromManualInput(input, state, REDIRECT_URI));
     try {
         const result = await Promise.race([callback.result, manualCode]);
         interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
-        return await completeOpenAIChatGPTAuthorization(authorization, result, interaction.signal);
+        const { verifier } = JSON.parse(authorization.context);
+        return await exchangeAuthorizationCode(result.code, verifier, result.clientId, REDIRECT_URI, interaction.signal);
     }
     catch (error) {
         if (interaction.signal.aborted)
