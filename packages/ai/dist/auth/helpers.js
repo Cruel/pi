@@ -46,18 +46,22 @@ export function lazyOAuth(input) {
         isSubscription: input.isSubscription,
         loginLabel: input.loginLabel,
         login: async (interaction, options) => (await loaded()).login(interaction, options),
-        beginAuthorization: async (options) => {
-            const oauth = await loaded();
-            if (!oauth.beginAuthorization)
-                throw new Error(`${input.name} does not support external OAuth authorization`);
-            return oauth.beginAuthorization(options);
-        },
-        completeAuthorization: async (authorization, callbackUrl, signal) => {
-            const oauth = await loaded();
-            if (!oauth.completeAuthorization)
-                throw new Error(`${input.name} does not support external OAuth authorization`);
-            return oauth.completeAuthorization(authorization, callbackUrl, signal);
-        },
+        ...(input.authorizationCode
+            ? {
+                beginAuthorization: async (options) => {
+                    const oauth = await loaded();
+                    if (!oauth.beginAuthorization)
+                        throw new Error(`${input.name} is missing its authorization implementation`);
+                    return oauth.beginAuthorization(options);
+                },
+                completeAuthorization: async (authorization, callbackUrl, signal) => {
+                    const oauth = await loaded();
+                    if (!oauth.completeAuthorization)
+                        throw new Error(`${input.name} is missing its completion implementation`);
+                    return oauth.completeAuthorization(authorization, callbackUrl, signal);
+                },
+            }
+            : {}),
         refresh: async (credential, signal) => (await loaded()).refresh(credential, signal),
         toAuth: async (credential) => (await loaded()).toAuth(credential),
     };

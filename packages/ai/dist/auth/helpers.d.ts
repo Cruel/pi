@@ -17,6 +17,8 @@ export declare function lazyOAuth(input: {
     name: string;
     isSubscription?: boolean;
     loginLabel?: string;
+    /** Advertise two-phase authorization only when the loaded provider supports it. */
+    authorizationCode?: boolean;
     load: () => Promise<OAuthAuth>;
 }): OAuthAuth;
 //# sourceMappingURL=helpers.d.ts.map
