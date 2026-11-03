@@ -41,7 +41,7 @@ function authorizationResultFromCallback(url, expectedState) {
         throw new Error("OpenAI OAuth registration callback did not contain an issued client ID");
     return { code, clientId };
 }
-function authorizationResultFromManualInput(input, expectedState, redirectUri) {
+function authorizationResultFromManualInput(input, expectedState, redirectUri = REDIRECT_URI) {
     let url;
     try {
         url = new URL(input.trim());
@@ -153,7 +153,7 @@ function credentialFromTokenResponse(token, clientId) {
         scopes,
     };
 }
-async function exchangeAuthorizationCode(code, verifier, clientId, redirectUri, signal) {
+async function exchangeAuthorizationCode(code, verifier, clientId, signal, redirectUri = REDIRECT_URI) {
     const token = await requestToken(new URLSearchParams({
         grant_type: "authorization_code",
         client_id: clientId,
@@ -189,7 +189,7 @@ function agentHostId(deviceId) {
     }
     return `urn:uuid:${deviceId.toLowerCase()}`;
 }
-async function beginOpenAIChatGPTAuthorization(options = {}) {
+async function prepareOpenAIChatGPTAuthorization(options = {}) {
     options.signal?.throwIfAborted();
     const hostId = agentHostId(options.getDeviceId?.());
     const redirectUri = options.redirectUri ?? REDIRECT_URI;
@@ -221,8 +221,12 @@ async function beginOpenAIChatGPTAuthorization(options = {}) {
         code_challenge_method: "S256",
         nonce,
     }).toString();
+    return { url: authorizationUrl.toString(), state, verifier, redirectUri };
+}
+async function beginOpenAIChatGPTAuthorization(options) {
+    const { url, state, verifier, redirectUri } = await prepareOpenAIChatGPTAuthorization(options);
     const context = { version: 1, state, verifier, redirectUri, createdAt: Date.now() };
-    return { url: authorizationUrl.toString(), state, context: JSON.stringify(context) };
+    return { url, state, context: JSON.stringify(context) };
 }
 async function completeOpenAIChatGPTAuthorization(authorization, callbackUrl, signal) {
     signal.throwIfAborted();
@@ -241,11 +245,10 @@ async function completeOpenAIChatGPTAuthorization(authorization, callbackUrl, si
         throw new Error("Invalid or expired OAuth authorization context");
     }
     const result = authorizationResultFromManualInput(callbackUrl, ctx.state, ctx.redirectUri);
-    return exchangeAuthorizationCode(result.code, ctx.verifier, result.clientId, ctx.redirectUri, signal);
+    return exchangeAuthorizationCode(result.code, ctx.verifier, result.clientId, signal, ctx.redirectUri);
 }
 async function loginOpenAIChatGPT(interaction, options) {
-    const authorization = await beginOpenAIChatGPTAuthorization(options);
-    const state = authorization.state;
+    const { url, state, verifier } = await prepareOpenAIChatGPTAuthorization(options);
     // Without this server, the browser's callback would reach whatever else holds the port (another
     // pending login or the Codex CLI), which rejects it as a state mismatch. Fail with a clear error instead.
     const callback = await startCallbackServer(state).catch((error) => {
@@ -255,7 +258,7 @@ async function loginOpenAIChatGPT(interaction, options) {
     });
     interaction.notify({
         type: "auth_url",
-        url: authorization.url,
+        url,
         instructions: "Complete sign-in in your browser. If the callback does not complete, paste the final redirect URL here.",
     });
     const manualAbort = new AbortController();
@@ -266,12 +269,11 @@ async function loginOpenAIChatGPT(interaction, options) {
         placeholder: REDIRECT_URI,
         signal: AbortSignal.any([manualAbort.signal, interaction.signal]),
     })
-        .then((input) => authorizationResultFromManualInput(input, state, REDIRECT_URI));
+        .then((input) => authorizationResultFromManualInput(input, state));
     try {
         const result = await Promise.race([callback.result, manualCode]);
         interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
-        const { verifier } = JSON.parse(authorization.context);
-        return await exchangeAuthorizationCode(result.code, verifier, result.clientId, REDIRECT_URI, interaction.signal);
+        return await exchangeAuthorizationCode(result.code, verifier, result.clientId, interaction.signal);
     }
     catch (error) {
         if (interaction.signal.aborted)
