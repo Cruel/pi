@@ -17,6 +17,7 @@ export function openaiProvider(): Provider<"openai-responses"> {
 				name: "OpenAI (ChatGPT subscription)",
 				isSubscription: true,
 				loginLabel: "Sign in with ChatGPT",
+				authorizationCode: true,
 				load: loadOpenAIChatGPTOAuth,
 			}),
 		},
