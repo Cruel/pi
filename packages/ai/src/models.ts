@@ -323,7 +323,7 @@ export interface Models {
 	/** Prepare a provider-supported OAuth browser authorization without a listener. */
 	beginOAuth(providerId: string, options?: OAuthAuthorizationOptions): Promise<OAuthAuthorization>;
 
-	/** Exchange a host-owned OAuth callback and persist the credential. Consume pending state once. */
+	/** Exchange a host-owned OAuth callback and persist the credential. The host consumes pending state once. */
 	completeOAuth(
 		providerId: string,
 		authorization: OAuthAuthorization,

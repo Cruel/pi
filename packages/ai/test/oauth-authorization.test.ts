@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createModels } from "../src/models.ts";
-import { anthropicProvider } from "../src/providers/anthropic.ts";
 import { openaiProvider } from "../src/providers/openai.ts";
 
 const hostId = "e61bbe28-07ef-466d-8e5d-a344f94ab305";
@@ -54,11 +53,17 @@ describe("Embeddable OAuth authorization", () => {
 		);
 	});
 
-	it("rejects providers without a two-phase authorization interface", async () => {
+	it("does not advertise two-phase support for a provider that only implements interactive login", async () => {
 		const models = createModels();
 		await expect(models.beginOAuth("missing")).rejects.toThrow(/unknown provider/i);
-		models.setProvider(anthropicProvider());
-		expect(models.getProvider("anthropic")?.auth.oauth?.beginAuthorization).toBeUndefined();
-		await expect(models.beginOAuth("anthropic")).rejects.toThrow(/does not support external OAuth authorization/i);
+		const provider = openaiProvider();
+		const {
+			beginAuthorization: _begin,
+			completeAuthorization: _complete,
+			...interactiveOAuth
+		} = provider.auth.oauth!;
+		models.setProvider({ ...provider, auth: { ...provider.auth, oauth: interactiveOAuth } });
+		expect(models.getProvider("openai")?.auth.oauth?.beginAuthorization).toBeUndefined();
+		await expect(models.beginOAuth("openai")).rejects.toThrow(/does not support external OAuth authorization/i);
 	});
 });
