@@ -6,8 +6,15 @@
  */
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type {
+	OAuthAuth,
+	OAuthAuthorization,
+	OAuthAuthorizationOptions,
+	OAuthCredential,
+	ProviderAuthInteraction,
+} from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
+import { authorizationCallback, pendingAuthorization, redirectUriForHost } from "./external-authorization.ts";
 import { generatePKCE } from "./pkce.ts";
 
 const decode = (s: string) => atob(s);
@@ -234,6 +241,39 @@ async function loginAnthropicCopyCode(interaction: ProviderAuthInteraction): Pro
 	);
 }
 
+/** Host-owned browser authorization; the existing interactive login remains unchanged. */
+async function beginAnthropicAuthorization(options: OAuthAuthorizationOptions = {}): Promise<OAuthAuthorization> {
+	options.signal?.throwIfAborted();
+	const { verifier, challenge } = await generatePKCE();
+	const state = crypto.randomUUID();
+	const redirectUri = redirectUriForHost(options.redirectUri ?? REDIRECT_URI);
+	const authParams = new URLSearchParams({
+		code: "true",
+		client_id: CLIENT_ID,
+		response_type: "code",
+		redirect_uri: redirectUri,
+		scope: SCOPES,
+		code_challenge: challenge,
+		code_challenge_method: "S256",
+		state,
+	});
+	return pendingAuthorization("anthropic", `${AUTHORIZE_URL}?${authParams}`, state, verifier, redirectUri);
+}
+
+async function completeAnthropicAuthorization(
+	authorization: OAuthAuthorization,
+	callbackUrl: string,
+	signal: AbortSignal,
+): Promise<OAuthCredential> {
+	const { code, state, verifier, redirectUri } = authorizationCallback(
+		"anthropic",
+		authorization,
+		callbackUrl,
+		signal,
+	);
+	return exchangeAuthorizationCode(code, state, verifier, redirectUri, signal);
+}
+
 /**
  * Refresh Anthropic OAuth token
  */
@@ -299,6 +339,8 @@ export const anthropicOAuth: OAuthAuth = {
 		return loginAnthropic(interaction);
 	},
 
+	beginAuthorization: beginAnthropicAuthorization,
+	completeAuthorization: completeAnthropicAuthorization,
 	refresh: (credential, signal) => refreshAnthropicToken(credential.refresh, signal),
 
 	async toAuth(credential) {

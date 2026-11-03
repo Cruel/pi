@@ -10,9 +10,16 @@
  */
 
 import { normalizeRadiusGatewayUrl } from "../../providers/radius-config.ts";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type {
+	OAuthAuth,
+	OAuthAuthorization,
+	OAuthAuthorizationOptions,
+	OAuthCredential,
+	ProviderAuthInteraction,
+} from "../types.ts";
 import { startOAuthCallbackServer } from "./callback-server.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
+import { authorizationCallback, pendingAuthorization, redirectUriForHost } from "./external-authorization.ts";
 import { generatePKCE } from "./pkce.ts";
 import { trustedHttpUrl } from "./trusted-url.ts";
 
@@ -283,6 +290,45 @@ export function createRadiusOAuth(options: RadiusOAuthOptions): OAuthAuth {
 
 	return {
 		name: options.name,
+
+		async beginAuthorization(authorizationOptions: OAuthAuthorizationOptions): Promise<OAuthAuthorization> {
+			const signal = authorizationOptions.signal ?? new AbortController().signal;
+			signal.throwIfAborted();
+			const { authorizationEndpoint } = await loadRadiusOAuthDiscovery(gateway, signal);
+			const { verifier, challenge } = await generatePKCE();
+			const state = crypto.randomUUID();
+			const redirectUri = redirectUriForHost(authorizationOptions.redirectUri ?? REDIRECT_URI);
+			const url = new URL(authorizationEndpoint);
+			url.search = new URLSearchParams({
+				response_type: "code",
+				client_id: OAUTH_CLIENT_ID,
+				redirect_uri: redirectUri,
+				scope: OAUTH_SCOPE,
+				code_challenge: challenge,
+				code_challenge_method: "S256",
+				handoff: "url",
+				state,
+			}).toString();
+			return pendingAuthorization("radius", url.toString(), state, verifier, redirectUri);
+		},
+		async completeAuthorization(
+			authorization: OAuthAuthorization,
+			callbackUrl: string,
+			signal: AbortSignal,
+		): Promise<OAuthCredential> {
+			const { code, verifier, redirectUri } = authorizationCallback("radius", authorization, callbackUrl, signal);
+			return requestOAuthToken(
+				gateway,
+				new URLSearchParams({
+					grant_type: "authorization_code",
+					client_id: OAUTH_CLIENT_ID,
+					redirect_uri: redirectUri,
+					code,
+					code_verifier: verifier,
+				}),
+				signal,
+			);
+		},
 
 		async login(interaction): Promise<OAuthCredential> {
 			const loginMethod = await interaction.prompt({

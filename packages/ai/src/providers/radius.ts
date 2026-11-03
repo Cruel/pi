@@ -37,7 +37,7 @@ export function radiusProvider(options: RadiusProviderOptions = {}): Provider<"p
 		name,
 		auth: {
 			apiKey: envApiKeyAuth("Radius API key", ["RADIUS_API_KEY"]),
-			oauth: lazyOAuth({ name, load: () => loadRadiusOAuth({ name, gateway }) }),
+			oauth: lazyOAuth({ name, authorizationCode: true, load: () => loadRadiusOAuth({ name, gateway }) }),
 		},
 		getModels: () => dynamicModels ?? baselineModels,
 		refreshModels: async (context) => {

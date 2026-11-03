@@ -81,6 +81,7 @@ export function anthropicProvider(): Provider<"anthropic-messages"> {
 			oauth: lazyOAuth({
 				name: "Anthropic (Claude Pro/Max)",
 				isSubscription: true,
+				authorizationCode: true,
 				load: loadAnthropicOAuth,
 			}),
 		},
