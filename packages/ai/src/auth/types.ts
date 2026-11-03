@@ -202,6 +202,23 @@ export interface ApiKeyAuth {
 	}): Promise<AuthResult | undefined>;
 }
 
+/** Options for an application-owned OAuth redirect. No listener or user prompt is created. */
+export interface OAuthAuthorizationOptions extends LoginOptions, AuthOperationOptions {
+	/** Provider-approved redirect URI. Some providers only support their registered URI. */
+	redirectUri?: string;
+}
+
+/**
+ * Pending browser authorization. `context` contains provider-owned secrets such
+ * as a PKCE verifier. Keep it server-side, encrypt it at rest, and consume it
+ * at most once. It is serializable for resuming after an application restart.
+ */
+export interface OAuthAuthorization {
+	url: string;
+	state: string;
+	context: string;
+}
+
 /** App-supplied context for `Models.login`. */
 export interface LoginOptions {
 	/**
@@ -233,6 +250,15 @@ export interface OAuthAuth {
 	loginLabel?: string;
 
 	login(interaction: ProviderAuthInteraction, options?: LoginOptions): Promise<OAuthCredential>;
+
+	/** Optional host-managed authorization-code flow (no HTTP listener or prompts). */
+	beginAuthorization?(options: OAuthAuthorizationOptions): Promise<OAuthAuthorization>;
+	/** Validate the callback and exchange its code. The host must enforce one-use state. */
+	completeAuthorization?(
+		authorization: OAuthAuthorization,
+		callbackUrl: string,
+		signal: AbortSignal,
+	): Promise<OAuthCredential>;
 
 	/**
 	 * Exchange the refresh token. Network call; throws on failure

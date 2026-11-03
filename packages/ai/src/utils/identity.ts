@@ -171,6 +171,9 @@ export function withClientIdentity(models: Models, identity: ClientIdentity): Mo
 		getAllAvailable: (providerId, options) => models.getAllAvailable(providerId, options),
 		getAuth: models.getAuth.bind(models),
 		login: (providerId, type, interaction, options) => models.login(providerId, type, interaction, options),
+		beginOAuth: (providerId, options) => models.beginOAuth(providerId, options),
+		completeOAuth: (providerId, authorization, callbackUrl, options) =>
+			models.completeOAuth(providerId, authorization, callbackUrl, options),
 		logout: (providerId, options) => models.logout(providerId, options),
 		stream: (model, context, options) => models.stream(model, context, withIdentity(options)),
 		complete: (model, context, options) => models.complete(model, context, withIdentity(options)),

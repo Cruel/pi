@@ -9,7 +9,14 @@ import { randomBytes } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { oauthErrorHtml, oauthSuccessHtml } from "../../utils/oauth-page.ts";
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
-import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type {
+	LoginOptions,
+	OAuthAuth,
+	OAuthAuthorization,
+	OAuthAuthorizationOptions,
+	OAuthCredential,
+	ProviderAuthInteraction,
+} from "../types.ts";
 import { generatePKCE } from "./pkce.ts";
 
 // every login registers a new client with this ID; OpenAI returns the issued client ID in the callback
@@ -35,7 +42,15 @@ type AuthorizationResult = {
 
 type CallbackServer = {
 	server: Server;
-	result: Promise<AuthorizationResult>;
+	result: Promise<string>;
+};
+
+type AuthorizationContext = {
+	version: 1;
+	state: string;
+	verifier: string;
+	redirectUri: string;
+	createdAt: number;
 };
 
 type TokenResponse = {
@@ -61,16 +76,20 @@ function authorizationResultFromCallback(url: URL, expectedState: string): Autho
 	return { code, clientId };
 }
 
-function authorizationResultFromManualInput(input: string, expectedState: string): AuthorizationResult {
+function authorizationResultFromManualInput(
+	input: string,
+	expectedState: string,
+	redirectUri: string,
+): AuthorizationResult {
 	let url: URL;
 	try {
 		url = new URL(input.trim());
 	} catch {
 		throw new Error("Paste the full callback URL from the browser");
 	}
-	const expected = new URL(REDIRECT_URI);
+	const expected = new URL(redirectUri);
 	if (url.origin !== expected.origin || url.pathname !== expected.pathname) {
-		throw new Error(`The pasted callback URL must start with ${REDIRECT_URI}`);
+		throw new Error(`The callback URL must start with ${redirectUri}`);
 	}
 	const error = url.searchParams.get("error");
 	if (error) throw new Error(`ChatGPT authorization failed: ${error}`);
@@ -84,9 +103,9 @@ function sendHtml(response: ServerResponse, status: number, body: string): void 
 
 function startCallbackServer(expectedState: string): Promise<CallbackServer> {
 	return new Promise((resolve, reject) => {
-		let resolveResult!: (result: AuthorizationResult) => void;
+		let resolveResult!: (result: string) => void;
 		let rejectResult!: (error: Error) => void;
-		const result = new Promise<AuthorizationResult>((resolveAuthorization, rejectAuthorization) => {
+		const result = new Promise<string>((resolveAuthorization, rejectAuthorization) => {
 			resolveResult = resolveAuthorization;
 			rejectResult = rejectAuthorization;
 		});
@@ -106,9 +125,8 @@ function startCallbackServer(expectedState: string): Promise<CallbackServer> {
 					return;
 				}
 
-				let authorizationResult: AuthorizationResult;
 				try {
-					authorizationResult = authorizationResultFromCallback(url, expectedState);
+					authorizationResultFromCallback(url, expectedState);
 				} catch (error) {
 					const message = error instanceof Error ? error.message : "Invalid callback";
 					sendHtml(response, 400, oauthErrorHtml(message));
@@ -116,7 +134,7 @@ function startCallbackServer(expectedState: string): Promise<CallbackServer> {
 				}
 
 				sendHtml(response, 200, oauthSuccessHtml("ChatGPT authentication completed. You can close this window."));
-				resolveResult(authorizationResult);
+				resolveResult(url.toString());
 			} catch {
 				sendHtml(response, 500, oauthErrorHtml("Internal error while processing the callback."));
 			}
@@ -184,6 +202,7 @@ async function exchangeAuthorizationCode(
 	code: string,
 	verifier: string,
 	clientId: string,
+	redirectUri: string,
 	signal: AbortSignal,
 ): Promise<OAuthCredential> {
 	const token = await requestToken(
@@ -192,7 +211,7 @@ async function exchangeAuthorizationCode(
 			client_id: clientId,
 			code,
 			code_verifier: verifier,
-			redirect_uri: REDIRECT_URI,
+			redirect_uri: redirectUri,
 			resource: RESOURCE,
 		}),
 		signal,
@@ -230,14 +249,76 @@ function agentHostId(deviceId: string | undefined): string {
 	return `urn:uuid:${deviceId.toLowerCase()}`;
 }
 
+async function beginOpenAIChatGPTAuthorization(options: OAuthAuthorizationOptions = {}): Promise<OAuthAuthorization> {
+	options.signal?.throwIfAborted();
+	const hostId = agentHostId(options.getDeviceId?.());
+	const redirectUri = options.redirectUri ?? REDIRECT_URI;
+	const redirect = new URL(redirectUri);
+	if (
+		redirect.protocol !== "http:" ||
+		redirect.hostname !== "127.0.0.1" ||
+		!redirect.port ||
+		redirect.pathname !== CALLBACK_PATH ||
+		redirect.search ||
+		redirect.hash ||
+		redirect.username ||
+		redirect.password
+	) {
+		throw new Error(`OpenAI ChatGPT requires an HTTP loopback redirect at 127.0.0.1:<port>${CALLBACK_PATH}`);
+	}
+	const { verifier, challenge } = await generatePKCE();
+	const state = randomValue();
+	const nonce = randomValue();
+	const authorizationUrl = new URL(AUTHORIZE_URL);
+	authorizationUrl.search = new URLSearchParams({
+		client_id: DYNAMIC_CLIENT_ID,
+		agent_name_hint: options.agentName ?? AGENT_NAME_HINT,
+		ext_agent_host_id: hostId,
+		response_type: "code",
+		redirect_uri: redirectUri,
+		resource: RESOURCE,
+		scope: SCOPE,
+		state,
+		code_challenge: challenge,
+		code_challenge_method: "S256",
+		nonce,
+	}).toString();
+	const context: AuthorizationContext = { version: 1, state, verifier, redirectUri, createdAt: Date.now() };
+	return { url: authorizationUrl.toString(), state, context: JSON.stringify(context) };
+}
+
+async function completeOpenAIChatGPTAuthorization(
+	authorization: OAuthAuthorization,
+	callbackUrl: string,
+	signal: AbortSignal,
+): Promise<OAuthCredential> {
+	signal.throwIfAborted();
+	const value: unknown = JSON.parse(authorization.context);
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new Error("Invalid OAuth authorization context");
+	const ctx = value as Partial<AuthorizationContext>;
+	if (
+		ctx.version !== 1 ||
+		typeof ctx.state !== "string" ||
+		ctx.state !== authorization.state ||
+		typeof ctx.verifier !== "string" ||
+		typeof ctx.redirectUri !== "string" ||
+		typeof ctx.createdAt !== "number" ||
+		ctx.createdAt > Date.now() ||
+		Date.now() - ctx.createdAt > 15 * 60_000
+	) {
+		throw new Error("Invalid or expired OAuth authorization context");
+	}
+	const result = authorizationResultFromManualInput(callbackUrl, ctx.state, ctx.redirectUri);
+	return exchangeAuthorizationCode(result.code, ctx.verifier, result.clientId, ctx.redirectUri, signal);
+}
+
 async function loginOpenAIChatGPT(
 	interaction: ProviderAuthInteraction,
 	options?: LoginOptions,
 ): Promise<OAuthCredential> {
-	const hostId = agentHostId(options?.getDeviceId?.());
-	const { verifier, challenge } = await generatePKCE();
-	const state = randomValue();
-	const nonce = randomValue();
+	const authorization = await beginOpenAIChatGPTAuthorization(options);
+	const state = authorization.state;
 	// Without this server, the browser's callback would reach whatever else holds the port (another
 	// pending login or the Codex CLI), which rejects it as a state mismatch. Fail with a clear error instead.
 	const callback = await startCallbackServer(state).catch((error: unknown) => {
@@ -247,41 +328,25 @@ async function loginOpenAIChatGPT(
 		);
 	});
 
-	const authorizationUrl = new URL(AUTHORIZE_URL);
-	authorizationUrl.search = new URLSearchParams({
-		client_id: DYNAMIC_CLIENT_ID,
-		agent_name_hint: options?.agentName ?? AGENT_NAME_HINT,
-		ext_agent_host_id: hostId,
-		response_type: "code",
-		redirect_uri: REDIRECT_URI,
-		resource: RESOURCE,
-		scope: SCOPE,
-		state,
-		code_challenge: challenge,
-		code_challenge_method: "S256",
-		nonce,
-	}).toString();
 	interaction.notify({
 		type: "auth_url",
-		url: authorizationUrl.toString(),
+		url: authorization.url,
 		instructions:
 			"Complete sign-in in your browser. If the callback does not complete, paste the final redirect URL here.",
 	});
 
 	const manualAbort = new AbortController();
-	const manualCode = interaction
-		.prompt({
-			type: "manual_code",
-			message: "Complete login in your browser, or paste the final redirect URL here:",
-			placeholder: REDIRECT_URI,
-			signal: AbortSignal.any([manualAbort.signal, interaction.signal]),
-		})
-		.then((input) => authorizationResultFromManualInput(input, state));
+	const manualCode = interaction.prompt({
+		type: "manual_code",
+		message: "Complete login in your browser, or paste the final redirect URL here:",
+		placeholder: REDIRECT_URI,
+		signal: AbortSignal.any([manualAbort.signal, interaction.signal]),
+	});
 
 	try {
 		const result = await Promise.race([callback.result, manualCode]);
 		interaction.notify({ type: "progress", message: "Exchanging authorization code for tokens..." });
-		return await exchangeAuthorizationCode(result.code, verifier, result.clientId, interaction.signal);
+		return await completeOpenAIChatGPTAuthorization(authorization, result, interaction.signal);
 	} catch (error) {
 		if (interaction.signal.aborted) throw new Error("Login cancelled");
 		throw error;
@@ -302,6 +367,8 @@ export const openaiChatGPTOAuth: OAuthAuth = {
 	isSubscription: true,
 	loginLabel: "Sign in with ChatGPT",
 	login: loginOpenAIChatGPT,
+	beginAuthorization: beginOpenAIChatGPTAuthorization,
+	completeAuthorization: completeOpenAIChatGPTAuthorization,
 	refresh: refreshAccessToken,
 	async toAuth(credential) {
 		return { apiKey: credential.access };

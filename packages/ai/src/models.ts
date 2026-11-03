@@ -17,6 +17,8 @@ import type {
 	Credential,
 	CredentialStore,
 	LoginOptions,
+	OAuthAuthorization,
+	OAuthAuthorizationOptions,
 	ProviderAuth,
 } from "./auth/types.ts";
 import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "./models-store.ts";
@@ -317,6 +319,17 @@ export interface Models {
 
 	/** Run a provider-owned login flow and persist its returned credential. */
 	login(providerId: string, type: AuthType, interaction: AuthInteraction, options?: LoginOptions): Promise<Credential>;
+
+	/** Prepare a provider-supported OAuth browser authorization without a listener. */
+	beginOAuth(providerId: string, options?: OAuthAuthorizationOptions): Promise<OAuthAuthorization>;
+
+	/** Exchange a host-owned OAuth callback and persist the credential. Consume pending state once. */
+	completeOAuth(
+		providerId: string,
+		authorization: OAuthAuthorization,
+		callbackUrl: string,
+		options?: AuthOperationOptions,
+	): Promise<Credential>;
 
 	/** Remove the stored credential for a provider. */
 	logout(providerId: string, options?: AuthOperationOptions): Promise<void>;
@@ -772,6 +785,35 @@ class ModelsImpl implements MutableModels {
 		};
 	}
 
+	async beginOAuth(providerId: string, options: OAuthAuthorizationOptions = {}): Promise<OAuthAuthorization> {
+		const signal = operationSignal(options.signal);
+		signal.throwIfAborted();
+		const provider = this.providers.get(providerId);
+		if (!provider) throw new ModelsError("provider", `Unknown provider: ${providerId}`);
+		if (!provider.auth.oauth?.beginAuthorization) {
+			throw new ModelsError("auth", `${provider.name} does not support external OAuth authorization`);
+		}
+		return provider.auth.oauth.beginAuthorization(options);
+	}
+
+	async completeOAuth(
+		providerId: string,
+		authorization: OAuthAuthorization,
+		callbackUrl: string,
+		options: AuthOperationOptions = {},
+	): Promise<Credential> {
+		const signal = operationSignal(options.signal);
+		signal.throwIfAborted();
+		const provider = this.providers.get(providerId);
+		if (!provider) throw new ModelsError("provider", `Unknown provider: ${providerId}`);
+		if (!provider.auth.oauth?.completeAuthorization) {
+			throw new ModelsError("auth", `${provider.name} does not support external OAuth authorization`);
+		}
+		const credential = await provider.auth.oauth.completeAuthorization(authorization, callbackUrl, signal);
+		await this.persistLoginCredential(providerId, credential, signal);
+		return credential;
+	}
+
 	async login(
 		providerId: string,
 		type: AuthType,
@@ -788,6 +830,15 @@ class ModelsImpl implements MutableModels {
 		}
 		const loginOperation: Promise<Credential> = method.login({ ...interaction, signal }, options);
 		const credential = await raceWithAbortSignal(loginOperation, signal);
+		await this.persistLoginCredential(providerId, credential, signal);
+		return credential;
+	}
+
+	private async persistLoginCredential(
+		providerId: string,
+		credential: Credential,
+		signal: AbortSignal,
+	): Promise<void> {
 		let mutationStarted = false;
 		let markMutationStarted: (() => void) | undefined;
 		const started = new Promise<void>((resolve) => {
@@ -826,7 +877,6 @@ class ModelsImpl implements MutableModels {
 			signal.throwIfAborted();
 			throw new ModelsError("auth", `Credential store modify failed for ${providerId}`, { cause: error });
 		}
-		return credential;
 	}
 
 	async logout(providerId: string, options?: AuthOperationOptions): Promise<void> {

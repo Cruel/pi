@@ -1793,7 +1793,7 @@ Several providers support OAuth authentication instead of static API keys:
 - **GitHub Copilot** (Copilot subscription)
 - **OpenRouter** (OAuth PKCE that mints a user-controlled API key)
 
-Each of these providers carries an `OAuthAuth` on `provider.auth.oauth` with three operations: `login(interaction)` uses the provider-neutral `AuthInteraction.prompt()`/`notify()` protocol and returns a credential, `refresh(credential, signal)` refreshes expiring credentials when applicable, and `toAuth(credential)` derives request auth (GitHub Copilot's per-account base URL comes from here). Provider login interactions and refresh calls always carry a concrete abort signal. Refresh is automatic: `models.getAuth(providerId)` and request paths refresh expired tokens under a credential-store lock, so concurrent requests and processes cannot double-refresh. OpenRouter's OAuth flow instead returns a permanent API key, so its refresh operation is a no-op.
+Each of these providers carries an `OAuthAuth` on `provider.auth.oauth` with three basic operations: `login(interaction)` uses the provider-neutral `AuthInteraction.prompt()`/`notify()` protocol and returns a credential, `refresh(credential, signal)` refreshes expiring credentials when applicable, and `toAuth(credential)` derives request auth (GitHub Copilot's per-account base URL comes from here). Provider login interactions and refresh calls always carry a concrete abort signal. Refresh is automatic: `models.getAuth(providerId)` and request paths refresh expired tokens under a credential-store lock, so concurrent requests and processes cannot double-refresh. OpenRouter's OAuth flow instead returns a permanent API key, so its refresh operation is a no-op.
 
 ```typescript
 import { createModels } from '@earendil-works/pi-ai';
@@ -1866,6 +1866,26 @@ Credentials are saved to `auth.json` in the current directory.
 ### Programmatic OAuth
 
 Built-in login and refresh flows are private provider implementations. Use provider-owned `OAuthAuth`, which composes with `CredentialStore` and gets locked auto-refresh through `Models`. The `@earendil-works/pi-ai/oauth` entry point retains only type declarations required by coding-agent extension OAuth compatibility.
+
+Applications with their own HTTP routing can use the optional, two-phase `Models.beginOAuth()` / `Models.completeOAuth()` interface. No callback listener or interactive prompt is created. A provider implementing `OAuthAuth.beginAuthorization` and `completeAuthorization` can opt in; providers that only support interactive or device authorization retain `login()`. Currently the built-in OpenAI ChatGPT flow implements the two-phase interface. The same operations are exposed by coding-agent's `ModelRuntime`, which also updates its model-availability snapshot on completion.
+
+```typescript
+const pending = await models.beginOAuth("openai", {
+  getDeviceId: () => persistedHostUuid,
+  agentName: "My App",
+  redirectUri: "http://127.0.0.1:3000/auth/callback",
+});
+// Persist pending privately against the user and one-time state.
+// pending.context contains the secret PKCE verifier: NEVER send it to the browser.
+redirectUserTo(pending.url);
+
+// On the application's callback route, find and consume the pending attempt
+// by its unpredictable state. Do not accept another user's pending context.
+await models.completeOAuth("openai", pending, fullCallbackUrl);
+// The credential is now in the app-supplied CredentialStore.
+```
+
+The host owns callback routing, tenant correlation, expiration and one-time consumption, including on crashes and concurrent requests. Store the serializable `pending.context` encrypted and server-side; never put it in a URL, cookie, browser state or logs. `completeOAuth` verifies the provider's callback URI and OAuth state and persists the resulting credential with the same serialized credential-store mutation used by `login()`. Failed callback validation does not overwrite the existing credential. The provider may restrict redirect URIs: ChatGPT currently accepts `http://127.0.0.1:<port>/auth/callback` only. A loopback redirect cannot directly reach a remotely hosted application from another machine; use a supported local authorization/credential handoff rather than assuming this interface changes the provider's redirect policy.
 
 Provider notes:
 

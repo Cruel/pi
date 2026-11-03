@@ -51,6 +51,8 @@ import {
 	type ModelTypeMap,
 	type MutableModels,
 	normalizeContext,
+	type OAuthAuthorization,
+	type OAuthAuthorizationOptions,
 	type Provider,
 	type ProviderHeaders,
 	type ProviderRequestOptions,
@@ -829,6 +831,24 @@ export class ModelRuntime implements Models {
 		} catch (error) {
 			return classifierErrorResult(model, error, options?.signal?.aborted);
 		}
+	}
+
+	beginOAuth(providerId: string, options?: OAuthAuthorizationOptions): Promise<OAuthAuthorization> {
+		return this.models.beginOAuth(providerId, options);
+	}
+
+	completeOAuth(
+		providerId: string,
+		authorization: OAuthAuthorization,
+		callbackUrl: string,
+		options: AuthOperationOptions = {},
+	): Promise<Credential> {
+		const signal = operationSignal(options.signal);
+		return this.enqueueCredentialOperation(providerId, signal, async () => {
+			const credential = await this.models.completeOAuth(providerId, authorization, callbackUrl, { signal });
+			await this.synchronizeCredentialState(providerId, "login", credential, signal);
+			return credential;
+		});
 	}
 
 	login(
