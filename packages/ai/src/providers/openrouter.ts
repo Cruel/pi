@@ -69,6 +69,7 @@ export function openrouterProvider(): Provider<"anthropic-messages" | "openai-co
 			oauth: lazyOAuth({
 				name: "OpenRouter OAuth",
 				loginLabel: "Sign in with OpenRouter",
+				authorizationCode: true,
 				load: loadOpenRouterOAuth,
 			}),
 		},

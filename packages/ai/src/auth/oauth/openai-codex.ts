@@ -14,9 +14,17 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 }
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
-import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type {
+	LoginOptions,
+	OAuthAuth,
+	OAuthAuthorization,
+	OAuthAuthorizationOptions,
+	OAuthCredential,
+	ProviderAuthInteraction,
+} from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
+import { authorizationCallback, pendingAuthorization, redirectUriForHost } from "./external-authorization.ts";
 import { generatePKCE } from "./pkce.ts";
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -288,6 +296,7 @@ async function pollOpenAICodexDeviceAuth(device: DeviceAuthInfo, signal: AbortSi
 
 async function createAuthorizationFlow(
 	originator: string = "pi",
+	redirectUri: string = REDIRECT_URI,
 ): Promise<{ verifier: string; state: string; url: string }> {
 	const { verifier, challenge } = await generatePKCE();
 	const state = createState();
@@ -295,7 +304,7 @@ async function createAuthorizationFlow(
 	const url = new URL(AUTHORIZE_URL);
 	url.searchParams.set("response_type", "code");
 	url.searchParams.set("client_id", CLIENT_ID);
-	url.searchParams.set("redirect_uri", REDIRECT_URI);
+	url.searchParams.set("redirect_uri", redirectUri);
 	url.searchParams.set("scope", SCOPE);
 	url.searchParams.set("code_challenge", challenge);
 	url.searchParams.set("code_challenge_method", "S256");
@@ -399,6 +408,23 @@ async function loginOpenAICodex(
 	}
 }
 
+/** Browser authorization without a listener; callers own the provider callback. */
+async function beginOpenAICodexAuthorization(options: OAuthAuthorizationOptions = {}): Promise<OAuthAuthorization> {
+	options.signal?.throwIfAborted();
+	const redirectUri = redirectUriForHost(options.redirectUri ?? REDIRECT_URI);
+	const { verifier, state, url } = await createAuthorizationFlow(options.agentName, redirectUri);
+	return pendingAuthorization("openai-codex", url, state, verifier, redirectUri);
+}
+
+async function completeOpenAICodexAuthorization(
+	authorization: OAuthAuthorization,
+	callbackUrl: string,
+	signal: AbortSignal,
+): Promise<OAuthCredential> {
+	const { code, verifier, redirectUri } = authorizationCallback("openai-codex", authorization, callbackUrl, signal);
+	return exchangeAuthorizationCodeForCredentials(code, verifier, redirectUri, signal);
+}
+
 /**
  * Refresh OpenAI Codex OAuth token
  */
@@ -430,6 +456,8 @@ export const openaiCodexOAuth: OAuthAuth = {
 		return loginOpenAICodex(interaction, options);
 	},
 
+	beginAuthorization: beginOpenAICodexAuthorization,
+	completeAuthorization: completeOpenAICodexAuthorization,
 	refresh: (credential, signal) => refreshOpenAICodexToken(credential.refresh, signal),
 
 	async toAuth(credential) {

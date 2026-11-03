@@ -12,8 +12,15 @@
  */
 
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
+import type {
+	OAuthAuth,
+	OAuthAuthorization,
+	OAuthAuthorizationOptions,
+	OAuthCredential,
+	ProviderAuthInteraction,
+} from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
+import { authorizationCallback, pendingAuthorization, redirectUriForHost } from "./external-authorization.ts";
 import { generatePKCE } from "./pkce.ts";
 
 const AUTHORIZE_URL = "https://openrouter.ai/auth";
@@ -156,10 +163,37 @@ async function loginOpenRouter(interaction: ProviderAuthInteraction): Promise<OA
 	}
 }
 
+async function beginOpenRouterAuthorization(options: OAuthAuthorizationOptions = {}): Promise<OAuthAuthorization> {
+	options.signal?.throwIfAborted();
+	const { verifier, challenge } = await generatePKCE();
+	const state = crypto.randomUUID();
+	if (!options.redirectUri) throw new Error("OpenRouter two-phase OAuth requires a host callback URL");
+	const redirectUri = redirectUriForHost(options.redirectUri);
+	const url = new URL(AUTHORIZE_URL);
+	url.search = new URLSearchParams({
+		callback_url: redirectUri,
+		code_challenge: challenge,
+		code_challenge_method: "S256",
+		state,
+	}).toString();
+	return pendingAuthorization("openrouter", url.toString(), state, verifier, redirectUri);
+}
+
+async function completeOpenRouterAuthorization(
+	authorization: OAuthAuthorization,
+	callbackUrl: string,
+	signal: AbortSignal,
+): Promise<OAuthCredential> {
+	const { code, verifier } = authorizationCallback("openrouter", authorization, callbackUrl, signal);
+	return exchangeAuthorizationCode(code, verifier, signal);
+}
+
 export const openRouterOAuth: OAuthAuth = {
 	name: "OpenRouter OAuth",
 	loginLabel: "Sign in with OpenRouter",
 	login: loginOpenRouter,
+	beginAuthorization: beginOpenRouterAuthorization,
+	completeAuthorization: completeOpenRouterAuthorization,
 	async refresh(credential, _signal) {
 		return credential;
 	},
